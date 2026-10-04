@@ -218,7 +218,92 @@ docker compose restart kirocrew && ./kirocrew.sh check
 
 ---
 
-## 8. 트러블슈팅
+## 8. 외부 공개 + Google(Gmail) 로그인 — Funnel + OAuth2 Proxy
+
+tailnet FQDN(3절)은 **이미 tailnet에 있는 사람**만 닿는다. tailnet **밖**의 사람을
+공개 인터넷으로 들이려면 — 포트포워딩·공인IP 없이 — **Tailscale Funnel** 앞에
+**OAuth2 Proxy**를 세워 허용한 Gmail 계정만 통과시킨다.
+
+```
+외부 사용자 → Funnel(443) → oauth2-proxy(:4180) → [Google 로그인 + 이메일 화이트리스트] → kirocrew(:PORT)
+                            (세 컨테이너가 tailscale netns 공유, 같은 127.0.0.1)
+```
+
+세 가지가 이미 `docker-compose.yml`에 배선돼 있다:
+- `oauth2-proxy` 서비스 (`127.0.0.1:4180` 리스닝, upstream = kirocrew)
+- `tailscale-serve.json` — Funnel 443 → 4180 선언, 부팅마다 자동 적용
+  (재부팅·재배포에도 수동 `tailscale funnel` 명령 없이 공개 유지)
+- `.env`의 Google 클라이언트 + 쿠키 시크릿 + 공개 FQDN 키
+
+### 셋업 (한 번만)
+
+**1) Google OAuth 클라이언트 발급** — [Google Cloud Console → Credentials](https://console.cloud.google.com/apis/credentials):
+- "OAuth 2.0 Client ID", Application type: **Web application**
+- **Authorized redirect URI**(정확히): `https://<내-FQDN>/oauth2/callback`
+  (예: `https://kirocrew.tailXXXX.ts.net/oauth2/callback`)
+
+**2) `.env` 채우기:**
+```bash
+cd ~/repos/kirocrew-docker
+
+OAUTH2_PUBLIC_FQDN=kirocrew.tailXXXX.ts.net   # .env 에
+OAUTH2_GOOGLE_CLIENT_ID=...                   # .env 에
+OAUTH2_GOOGLE_CLIENT_SECRET=...               # .env 에
+
+# 쿠키 시크릿 — 정확히 16/24/32 바이트여야 한다.
+# 함정: `openssl rand -base64 32` 는 44글자 → 44바이트로 읽혀 거부된다.
+# 32글자 평문을 쓸 것:
+echo "OAUTH2_COOKIE_SECRET=$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32)" >> .env
+```
+
+**3) CORS 를 공개 HTTPS origin 으로** (Funnel 은 443, 포트 없음):
+```bash
+sed -i.bak 's|^KIROCREW_CORS_ORIGINS=.*|KIROCREW_CORS_ORIGINS=https://kirocrew.tailXXXX.ts.net|' .env && rm -f .env.bak
+```
+
+**4) 허용 Gmail 목록:**
+```bash
+cp authenticated_emails.txt.example authenticated_emails.txt
+#   편집: 허용할 Gmail 을 한 줄에 하나. 목록 밖 계정은 로그인해도 거부.
+```
+
+**5) 기동** (Funnel 은 `tailscale-serve.json` 에서 자동 기동):
+```bash
+docker compose up -d
+./kirocrew.sh                                 # netns 보정
+docker compose exec tailscale tailscale funnel status   # 443 → 127.0.0.1:4180 떠야 함
+```
+
+### 접속
+
+외부 사용자가 **`https://<내-FQDN>`** (포트 없음, https) 접속 → oauth2-proxy
+Sign-In → "Sign in with Google" → 허용 Gmail → KiroCrew 대시보드
+(그다음 대시보드 토큰: `docker compose exec kirocrew kirocrew token`).
+
+> `curl https://<FQDN>/` 가 본문 `<title>Sign In</title>` 과 함께 **403** 을 내는 건
+> **정상**이다 — 쿠키 없는 요청에 대한 proxy 의 로그인 페이지. 브라우저는 실제
+> Google 플로우로 간다. **502** 는 proxy 가 안 뜬 것(트러블슈팅 참조).
+
+### 다른 사람 추가 (유일하게 반복할 작업)
+```bash
+echo "them@gmail.com" >> authenticated_emails.txt
+docker compose up -d          # 목록 다시 읽기
+```
+
+### 외부 공개 끄기
+```bash
+# 이번 부팅의 Funnel 광고 중단:
+docker compose exec tailscale tailscale funnel --https=443 off
+# 영구적으로: docker-compose.yml 의 TS_SERVE_CONFIG + 마운트 두 줄을 주석 처리하고
+# oauth2-proxy 서비스를 멈춘다.
+```
+
+> tailnet ACL 에서 Funnel 허용(`nodeAttrs` → `funnel`)과 HTTPS 인증서 켜짐(보통 기본)이
+> 전제. `tailscale funnel status` 가 `No serve config` 면 아직 광고 전일 뿐 에러 아님.
+
+---
+
+## 9. 트러블슈팅
 
 | 증상 | 원인 / 조치 |
 | --- | --- |
@@ -226,6 +311,10 @@ docker compose restart kirocrew && ./kirocrew.sh check
 | `라우팅 테이블이 비어 있습니다` | 죽은 netns → `./kirocrew.sh` 재부착 (4절) |
 | `kiro-cli login: dispatch failure` | 죽은 netns (4절) — `./kirocrew.sh check` 로 라우팅/외부연결 확인 |
 | tailnet FQDN 이 403 | CORS 미반영 → 3절. `up -d` 재생성 했는지 확인 |
+| 공개 FQDN 이 **502** | oauth2-proxy 죽음 → `docker compose logs oauth2-proxy`. 흔한 원인: `cookie_secret ... 44 bytes`(32글자 시크릿 쓸 것, 8절), Google client id/secret 누락, `authenticated_emails.txt` 미생성 |
+| 공개 FQDN 이 **403** + "Sign In" 페이지 | **정상** — proxy 로그인 페이지. 브라우저로 열 것 (8절) |
+| Google `redirect_uri_mismatch` | Console redirect URI 가 정확히 `https://<FQDN>/oauth2/callback` 여야 함 |
+| Google 로그인 후 `403 Forbidden` | 그 Gmail 이 `authenticated_emails.txt` 에 없음 |
 | tailscale `Logged out` | `./kirocrew.sh tsauth` → URL 승인 |
 | 노드 이름이 `kirocrew-1` | 동명 노드 존재 → 콘솔에서 정리 (3절) |
 | `down` 후 다시 로그인해야 했다 | `down -v` 를 쓴 것 — `-v` 는 볼륨을 지운다 (5절). 그냥 `down` 을 쓸 것 |

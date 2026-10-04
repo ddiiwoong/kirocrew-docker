@@ -32,8 +32,18 @@ services:
       # 태그된 authkey 를 쓸 때: "--advertise-tags=tag:kirocrew"
       TS_EXTRA_ARGS: "${TS_EXTRA_ARGS:-}"
 
+      # Funnel/Serve 를 선언형으로 자동 기동. 이 파일이 있으면 컨테이너가 뜰 때마다
+      # 443(공개 Funnel) → 127.0.0.1:4180(oauth2-proxy) 포워딩이 자동 적용된다.
+      # 즉 재부팅·재배포·복제에도 수동 `tailscale funnel` 명령 없이 공개가 유지된다.
+      # ${TS_CERT_DOMAIN} 은 tailscale 이 자기 FQDN 으로 자동 치환하므로 하드코딩 불필요.
+      # Google 로그인 벽 없이 대시보드를 바로 공개하려면 serve JSON 의 4180 을
+      # ${KIROCREW_PORT} 로 바꾸면 된다(비권장 -- 토큰만 벽).
+      # 이 공개 자동화를 끄려면 아래 두 줄(env + 마운트)을 주석 처리하면 된다.
+      TS_SERVE_CONFIG: /config/serve.json
+
     volumes:
       - tailscale-state:/var/lib/tailscale
+      - ./tailscale-serve.json:/config/serve.json:ro
 
     # TS_USERSPACE=false (커널 모드) 로 바꿀 때만 필요:
     # devices:
@@ -46,6 +56,62 @@ services:
     # ports 를 쓸 수 없고 반드시 여기 있어야 한다.
     ports:
       - "127.0.0.1:${HOST_PORT:-5476}:${KIROCREW_PORT:-5476}"
+
+  # ---------------------------------------------------------------------------
+  # OAuth2 Proxy -- Google(Gmail) 로그인 벽.
+  #
+  # 외부 사용자 → Funnel(443) → 이 proxy(:4180) → [Google 로그인] → kirocrew(:PORT)
+  # tailscale 의 netns 를 공유하므로 세 컨테이너가 같은 127.0.0.1 을 쓴다.
+  # proxy 는 upstream 으로 http://127.0.0.1:${KIROCREW_PORT} 를 바라본다.
+  #
+  # tailscale-serve.json 이 Funnel 을 4180 으로 자동 연결하므로, 이 서비스는
+  # 기본 `up` 에서 항상 함께 뜬다(재부팅·재배포에도 자동). 공개가 필요 없으면
+  # 이 서비스 블록과 tailscale 의 TS_SERVE_CONFIG 두 줄을 함께 주석 처리한다.
+  # ---------------------------------------------------------------------------
+  oauth2-proxy:
+    image: quay.io/oauth2-proxy/oauth2-proxy:latest
+    container_name: kirocrew-oauth2-proxy
+    restart: unless-stopped
+    network_mode: "service:tailscale"
+    depends_on:
+      tailscale:
+        condition: service_started
+    environment:
+      # --- 리스닝 (netns 공유라 127.0.0.1 로만, funnel 이 이 포트를 노출) ---
+      OAUTH2_PROXY_HTTP_ADDRESS: "127.0.0.1:4180"
+
+      # --- 보호 대상 (같은 netns 의 kirocrew) ---
+      OAUTH2_PROXY_UPSTREAMS: "http://127.0.0.1:${KIROCREW_PORT:-5476}"
+
+      # --- Google 공급자 ---
+      OAUTH2_PROXY_PROVIDER: "google"
+      OAUTH2_PROXY_CLIENT_ID: "${OAUTH2_GOOGLE_CLIENT_ID:-}"
+      OAUTH2_PROXY_CLIENT_SECRET: "${OAUTH2_GOOGLE_CLIENT_SECRET:-}"
+
+      # 공개 FQDN 기준 콜백. Google Console 의 Authorized redirect URI 와 반드시 일치.
+      OAUTH2_PROXY_REDIRECT_URL: "https://${OAUTH2_PUBLIC_FQDN}/oauth2/callback"
+
+      # --- 접근 허용 범위: 이메일 화이트리스트 (쉼표 구분) ---
+      # 특정 Gmail 계정만: user1@gmail.com,user2@gmail.com
+      # 조직 도메인 전체면 OAUTH2_PROXY_EMAIL_DOMAINS 로 바꿔 쓸 것.
+      OAUTH2_PROXY_AUTHENTICATED_EMAILS_FILE: "/etc/oauth2-proxy/authenticated_emails.txt"
+
+      # --- 쿠키 (세션 암호화 키) ---
+      # 함정: 정확히 16/24/32 '바이트' 여야 한다. `openssl rand -base64 32` 의 출력은
+      # 44글자라 44바이트로 읽혀 거부된다. 32글자 평문을 쓸 것:
+      #   OAUTH2_COOKIE_SECRET=$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32)
+      OAUTH2_PROXY_COOKIE_SECRET: "${OAUTH2_COOKIE_SECRET:-}"
+      OAUTH2_PROXY_COOKIE_SECURE: "true"       # funnel 은 항상 HTTPS
+
+      # --- 리버스 프록시 뒤에 있음(Funnel) + 전체 경로 보호 ---
+      OAUTH2_PROXY_REVERSE_PROXY: "true"
+      OAUTH2_PROXY_EMAIL_DOMAINS: "*"          # 화이트리스트 파일로 좁히므로 여기선 전체 허용
+      # kirocrew 가 Host 헤더를 검사하므로, 통과시킬 때 FQDN Host 를 유지한다.
+      OAUTH2_PROXY_PASS_HOST_HEADER: "true"
+
+    volumes:
+      # 허용 이메일 목록 (한 줄에 하나). 이 파일을 만들어 둘 것 (가이드 참조).
+      - ./authenticated_emails.txt:/etc/oauth2-proxy/authenticated_emails.txt:ro
 
   # ---------------------------------------------------------------------------
   # KiroCrew 게이트웨이. tailscale 컨테이너의 네트워크를 그대로 공유한다.

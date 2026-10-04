@@ -221,7 +221,94 @@ its own `kirocrew-home`.
 
 ---
 
-## 8. Troubleshooting
+## 8. Public access + Google (Gmail) login — Funnel + OAuth2 Proxy
+
+The tailnet FQDN (section 3) only reaches people **already on your tailnet**. To
+let someone **outside** the tailnet in — over the public internet, no port
+forwarding, no public IP — use **Tailscale Funnel** with an **OAuth2 Proxy** in
+front so only allow-listed Gmail accounts get through.
+
+```
+external user → Funnel(443) → oauth2-proxy(:4180) → [Google login + email allowlist] → kirocrew(:PORT)
+                              (all three containers share the tailscale netns, same 127.0.0.1)
+```
+
+Three pieces are already wired into `docker-compose.yml`:
+- the `oauth2-proxy` service (listens on `127.0.0.1:4180`, upstream = kirocrew),
+- `tailscale-serve.json` — declares Funnel 443 → 4180, auto-applied on every boot
+  (so it survives reboot/redeploy with no manual `tailscale funnel` command),
+- `.env` keys for the Google client + cookie secret + public FQDN.
+
+### Setup (once)
+
+**1) Create a Google OAuth client** — [Google Cloud Console → Credentials](https://console.cloud.google.com/apis/credentials):
+- "OAuth 2.0 Client ID", Application type: **Web application**
+- **Authorized redirect URI** (exact): `https://<your-FQDN>/oauth2/callback`
+  (e.g. `https://kirocrew.tailXXXX.ts.net/oauth2/callback`)
+
+**2) Fill `.env`:**
+```bash
+cd ~/repos/kirocrew-docker
+
+OAUTH2_PUBLIC_FQDN=kirocrew.tailXXXX.ts.net   # into .env
+OAUTH2_GOOGLE_CLIENT_ID=...                   # into .env
+OAUTH2_GOOGLE_CLIENT_SECRET=...               # into .env
+
+# cookie secret — must be exactly 16/24/32 BYTES.
+# PITFALL: `openssl rand -base64 32` prints 44 chars → read as 44 bytes → REJECTED.
+# use a 32-char plaintext instead:
+echo "OAUTH2_COOKIE_SECRET=$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32)" >> .env
+```
+
+**3) Set CORS to the public HTTPS origin** (Funnel is 443, no port):
+```bash
+sed -i.bak 's|^KIROCREW_CORS_ORIGINS=.*|KIROCREW_CORS_ORIGINS=https://kirocrew.tailXXXX.ts.net|' .env && rm -f .env.bak
+```
+
+**4) Allow-list the Gmail accounts:**
+```bash
+cp authenticated_emails.txt.example authenticated_emails.txt
+#   edit: one allowed Gmail per line. A login outside this list is rejected.
+```
+
+**5) Bring it up** (Funnel auto-starts from `tailscale-serve.json`):
+```bash
+docker compose up -d
+./kirocrew.sh                                 # netns repair
+docker compose exec tailscale tailscale funnel status   # expect: 443 → 127.0.0.1:4180
+```
+
+### Access
+
+External users open **`https://<your-FQDN>`** (no port, https) → oauth2-proxy
+Sign-In → "Sign in with Google" → an allow-listed Gmail → KiroCrew dashboard
+(then the dashboard token: `docker compose exec kirocrew kirocrew token`).
+
+> `curl https://<FQDN>/` returning **403** with a `<title>Sign In</title>` body is
+> **normal** — that is the proxy's login page for a cookieless request. A browser
+> gets the real Google flow. **502** means the proxy isn't up (see Troubleshooting).
+
+### Adding a person later (the only recurring task)
+```bash
+echo "them@gmail.com" >> authenticated_emails.txt
+docker compose up -d          # re-read the list
+```
+
+### Turning public access off
+```bash
+# stop advertising Funnel for this boot:
+docker compose exec tailscale tailscale funnel --https=443 off
+# or permanently: comment out TS_SERVE_CONFIG + its mount in docker-compose.yml,
+# and stop the oauth2-proxy service.
+```
+
+> Needs Funnel enabled in your tailnet ACL (`nodeAttrs` → `funnel`) and HTTPS certs
+> on (usually default). `tailscale funnel status` showing `No serve config` just
+> means nothing is advertised yet — not an error.
+
+---
+
+## 9. Troubleshooting
 
 | Symptom | Cause / fix |
 | --- | --- |
@@ -229,6 +316,10 @@ its own `kirocrew-home`.
 | `routing table is empty` | dead netns → `./kirocrew.sh` to re-attach (section 4) |
 | `kiro-cli login: dispatch failure` | dead netns (section 4) — check routing/egress with `./kirocrew.sh check` |
 | tailnet FQDN gives 403 | CORS not applied → section 3; confirm you ran `up -d` to recreate |
+| public FQDN gives **502** | oauth2-proxy down → `docker compose logs oauth2-proxy`. Common: `cookie_secret ... 44 bytes` (use a 32-char secret, section 8), or missing Google client id/secret, or `authenticated_emails.txt` not created |
+| public FQDN gives **403** + "Sign In" page | **normal** — proxy login page; open in a browser (section 8) |
+| Google `redirect_uri_mismatch` | Console redirect URI must be exactly `https://<FQDN>/oauth2/callback` |
+| `403 Forbidden` after Google login | that Gmail isn't in `authenticated_emails.txt` |
 | tailscale `Logged out` | `./kirocrew.sh tsauth` → approve the URL |
 | node named `kirocrew-1` | a same-named node exists → clean up in the console (section 3) |
 | had to log in again after `down` | you used `down -v`; `-v` wipes volumes (section 5). Use plain `down` |

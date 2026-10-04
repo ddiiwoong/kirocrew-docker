@@ -1,0 +1,10 @@
+# 이 파일을 authenticated_emails.txt 로 복사하고, 접근을 허용할 Gmail 주소를
+# 한 줄에 하나씩 적는다. 여기 없는 계정은 Google 로그인에 성공해도 거부된다.
+#
+#   cp authenticated_emails.txt.example authenticated_emails.txt
+#
+# 실제 파일(authenticated_emails.txt)은 .gitignore 로 제외된다(개인정보).
+# 빈 줄과 '#' 주석은 무시된다.
+
+alice@gmail.com
+bob@gmail.com

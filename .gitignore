@@ -9,5 +9,8 @@
 # 로컬 KiroCrew CLI 설정 (이 머신 전용).
 .kiro/
 
+# OAuth2 Proxy 허용 이메일 목록 (실제 Gmail 주소 -- 개인정보). .example 만 커밋.
+authenticated_emails.txt
+
 # OS/에디터 부산물.
 .DS_Store
