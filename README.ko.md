@@ -8,8 +8,6 @@ KiroCrew 게이트웨이를 **헤드리스 Docker 컨테이너**로 띄우고, T
 - 각 인스턴스 = `kirocrew-home` 볼륨 하나 = 독립된 설정·세션·자격증명. 호스트의
   다른 파일에 닿지 않는다. 이게 "별도 인스턴스"로 다른 사람에게 자기 KiroCrew 를
   주는 방법이다 — 테넌트당 인스턴스 하나.
-- **이 트랙은 사내망 TLS 재서명(SASE / 재서명 CA)을 다루지 않는다.** 네트워크가
-  TLS 를 재서명한다면 아래 "사내 CA 가 필요하면"을 볼 것.
 
 실측 환경: macOS(arm64) + Rancher Desktop(dockerd/moby 백엔드).
 
@@ -220,27 +218,13 @@ docker compose restart kirocrew && ./kirocrew.sh check
 
 ---
 
-## 8. 사내 CA(SASE)가 필요하면
-
-이 트랙은 TLS 재서명 대응을 **뺐다**. 네트워크가 특정 호스트(예: IdP start URL)의
-TLS 를 재서명해서 `kiro-cli login` 이 그 호스트에서만 `dispatch failure`
-(= `x509: unknown authority`)로 죽는다면:
-
-1. 먼저 netns 함정을 배제: `./kirocrew.sh check <그-호스트>` 의 맨 윗줄이
-   `[FAIL] ... unknown authority` 인가? (timeout/resolve 실패는 CA 문제가 아니다.)
-2. 재서명 CA 가 맞으면, **공용 루트 + 사내 CA** 를 함께 담은 번들을 컨테이너에
-   마운트하고 CA 환경변수(`SSL_CERT_FILE` 등)를 설정한다. 그 배선은 이 트랙에서
-   제거됐으니 재추가하거나 사내 CA 빌드를 쓴다.
-
----
-
-## 9. 트러블슈팅
+## 8. 트러블슈팅
 
 | 증상 | 원인 / 조치 |
 | --- | --- |
 | `docker 를 찾을 수 없습니다` | Rancher Desktop 꺼짐, 또는 `~/.rd/bin` 이 PATH 밖 |
 | `라우팅 테이블이 비어 있습니다` | 죽은 netns → `./kirocrew.sh` 재부착 (4절) |
-| `kiro-cli login: dispatch failure` | 대개 죽은 netns (4절). netns 정상이면 사내 CA (8절) |
+| `kiro-cli login: dispatch failure` | 죽은 netns (4절) — `./kirocrew.sh check` 로 라우팅/외부연결 확인 |
 | tailnet FQDN 이 403 | CORS 미반영 → 3절. `up -d` 재생성 했는지 확인 |
 | tailscale `Logged out` | `./kirocrew.sh tsauth` → URL 승인 |
 | 노드 이름이 `kirocrew-1` | 동명 노드 존재 → 콘솔에서 정리 (3절) |

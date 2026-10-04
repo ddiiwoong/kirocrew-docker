@@ -8,8 +8,6 @@ sidecar so people on your tailnet can reach the dashboard by its MagicDNS name.
 - Each instance = one `kirocrew-home` volume = its own isolated config, sessions,
   and credentials. It never touches other files on the host. This is how you give
   a separate person their own KiroCrew: one instance per tenant.
-- **This track does NOT handle a corporate TLS-inspection (SASE / re-signing CA)
-  network.** If your network re-signs TLS, see "If you need a corporate CA" below.
 
 Validated on macOS (arm64) + Rancher Desktop (dockerd/moby backend).
 
@@ -223,27 +221,13 @@ its own `kirocrew-home`.
 
 ---
 
-## 8. If you need a corporate CA (SASE)
-
-This track **drops** TLS-inspection handling. If your network re-signs TLS for a
-specific host (e.g. an IdP start URL) so that `kiro-cli login` dies there with
-`dispatch failure` (= `x509: unknown authority`):
-
-1. Rule out the netns pitfall first: `./kirocrew.sh check <that-host>` — is the top
-   line `[FAIL] ... unknown authority`? (A timeout/resolve failure is not a CA issue.)
-2. If it is a re-signing CA, mount a bundle containing **public roots + your
-   corporate CA** into the container and set the CA env vars (`SSL_CERT_FILE`, etc.).
-   That wiring was removed from this track — re-add it, or use a corporate-CA build.
-
----
-
-## 9. Troubleshooting
+## 8. Troubleshooting
 
 | Symptom | Cause / fix |
 | --- | --- |
 | `docker not found` | Rancher Desktop off, or `~/.rd/bin` not on PATH |
 | `routing table is empty` | dead netns → `./kirocrew.sh` to re-attach (section 4) |
-| `kiro-cli login: dispatch failure` | usually dead netns (section 4); if netns is fine, corporate CA (section 8) |
+| `kiro-cli login: dispatch failure` | dead netns (section 4) — check routing/egress with `./kirocrew.sh check` |
 | tailnet FQDN gives 403 | CORS not applied → section 3; confirm you ran `up -d` to recreate |
 | tailscale `Logged out` | `./kirocrew.sh tsauth` → approve the URL |
 | node named `kirocrew-1` | a same-named node exists → clean up in the console (section 3) |
