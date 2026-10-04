@@ -1,0 +1,110 @@
+services:
+  # ---------------------------------------------------------------------------
+  # Tailscale 사이드카. 네트워크 네임스페이스의 "소유자"이므로
+  # 포트 발행(ports)과 tailnet 진입점이 모두 이 컨테이너에 있다.
+  # ---------------------------------------------------------------------------
+  tailscale:
+    image: tailscale/tailscale:stable
+    container_name: kirocrew-tailscale
+    hostname: ${TS_HOSTNAME:-kirocrew}
+    restart: unless-stopped
+
+    environment:
+      # 인증: authkey 가 있으면 무인 로그인. 비워두면 대화형 로그인 URL 이
+      # `docker compose logs -f tailscale` 에 출력된다.
+      TS_AUTHKEY: "${TS_AUTHKEY:-}"
+
+      # MagicDNS 이름이 된다 -> https://<TS_HOSTNAME>.<tailnet>.ts.net
+      TS_HOSTNAME: "${TS_HOSTNAME:-kirocrew}"
+
+      # 인증 상태를 볼륨에 보존. 이게 없으면 재시작마다 새 노드로 재인증한다.
+      TS_STATE_DIR: /var/lib/tailscale
+
+      # userspace 모드: /dev/net/tun 과 NET_ADMIN 없이 동작한다.
+      # tailnet -> 컨테이너 인바운드(대시보드 접속)는 정상 동작한다.
+      # 컨테이너에서 tailnet 의 다른 노드로 나가는 통신이 필요하면 false 로
+      # 바꾸고 아래 devices/cap_add 주석을 해제할 것.
+      TS_USERSPACE: "${TS_USERSPACE:-true}"
+
+      # MagicDNS 가 컨테이너 resolv.conf 를 덮어써서 외부 DNS 를 깨는 것을 방지.
+      TS_ACCEPT_DNS: "false"
+
+      # 태그된 authkey 를 쓸 때: "--advertise-tags=tag:kirocrew"
+      TS_EXTRA_ARGS: "${TS_EXTRA_ARGS:-}"
+
+    volumes:
+      - tailscale-state:/var/lib/tailscale
+
+    # TS_USERSPACE=false (커널 모드) 로 바꿀 때만 필요:
+    # devices:
+    #   - /dev/net/tun:/dev/net/tun
+    # cap_add:
+    #   - NET_ADMIN
+    #   - NET_RAW
+
+    # 로컬 PC 접속용 포트. network_mode 를 공유하므로 kirocrew 쪽에는
+    # ports 를 쓸 수 없고 반드시 여기 있어야 한다.
+    ports:
+      - "127.0.0.1:${HOST_PORT:-5476}:${KIROCREW_PORT:-5476}"
+
+  # ---------------------------------------------------------------------------
+  # KiroCrew 게이트웨이. tailscale 컨테이너의 네트워크를 그대로 공유한다.
+  # ---------------------------------------------------------------------------
+  kirocrew:
+    image: ghcr.io/kirodotdev/kirocrew:stable
+    container_name: kirocrew
+    restart: unless-stopped
+
+    # 네임스페이스 공유. 이 줄 때문에 kirocrew 에는 ports/networks 를 쓸 수 없다.
+    #
+    # 주의 -- 실제로 겪은 함정: tailscale 컨테이너가 재시작하면 공유 netns 가
+    # 새로 만들어지고, 먼저 떠 있던 이 컨테이너는 죽은 netns 를 붙들고 남는다.
+    # 증상이 헷갈린다: loopback 은 살아 있어서 healthcheck 는 계속 healthy 인데
+    # 라우팅 테이블이 비고 DNS 가 전멸해서, 컨테이너 안의 모든 외부 통신이
+    # "Could not resolve host" / "dispatch failure" 로 실패한다.
+    # => tailscale 을 재시작/재생성했으면 반드시 kirocrew 도 재시작할 것:
+    #    docker compose restart kirocrew   (kirocrew.sh 가 자동으로 처리한다)
+    network_mode: "service:tailscale"
+    depends_on:
+      tailscale:
+        # service_healthy 가 아니라 started: 대화형 로그인 대기 중에도
+        # 게이트웨이는 떠 있어야 하고, 네임스페이스는 인증과 무관하게 존재한다.
+        condition: service_started
+
+    environment:
+      # 컨테이너 내부 리스닝 포트. 저장된 config 의 dashboard.url 보다 우선한다.
+      KIROCREW_PORT: "${KIROCREW_PORT:-5476}"
+
+      # 이미지에 이미 0.0.0.0 이 박혀 있다. 명시해 두는 이유는 이 값이
+      # loopback 으로 좁아지면 tailscale userspace 프록시와 docker 포트 발행
+      # 양쪽이 동시에 죽기 때문 -- 조용히 바뀌면 안 되는 값이다.
+      KIROCREW_BIND: "0.0.0.0"
+
+      # tailnet 이름으로 접속하기 위한 필수 설정.
+      # 게이트웨이는 서비스하지 않는 Host 헤더를 DNS-rebinding 방어로 403 거절하며,
+      # 기본 허용 목록은 localhost/127.0.0.1/::1/kirocrew.localhost 뿐이다.
+      # 이 변수는 CSRF Origin 허용 목록과 Host 허용 목록에 동시에 반영된다.
+      # 예: http://kirocrew.tail1a2b3c.ts.net:15476
+      KIROCREW_CORS_ORIGINS: "${KIROCREW_CORS_ORIGINS:-}"
+
+      # HOST_PORT != KIROCREW_PORT 로 둘 때 브라우저가 보내는
+      # Origin(호스트 포트)과 게이트웨이가 아는 포트가 어긋나는 것을 메운다.
+      KIROCREW_ALLOWED_LOOPBACK_PORTS: "${HOST_PORT:-5476}"
+
+    volumes:
+      - kirocrew-home:/home/kirocrew
+
+    # 프로필 json 은 이 compose 파일과 같은 디렉터리에 있어야 한다.
+    # 주의(Rancher Desktop): seccomp 프로필은 dockerd(moby) 백엔드에서만 적용된다.
+    # containerd 백엔드로 전환돼 있으면 docker compose 자체가 동작하지 않으니
+    # Rancher Desktop > Preferences > Container Engine 을 dockerd(moby) 로 둘 것.
+    security_opt:
+      - seccomp:./kirocrew-seccomp.json
+
+volumes:
+  kirocrew-home:
+    # name 을 명시해야 <project>_kirocrew-home 이 아닌
+    # 기존 docker run 이 만든 kirocrew-home 볼륨을 그대로 재사용한다.
+    name: kirocrew-home
+  tailscale-state:
+    name: kirocrew-tailscale-state

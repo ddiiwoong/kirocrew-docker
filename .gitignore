@@ -1,0 +1,13 @@
+# 실제 설정값. TS_AUTHKEY(비밀정보), tailnet 이름, 노드 IP 가 들어간다.
+# .env.example 을 복사해서 만들 것.
+.env
+
+# 혹시 인증서/키 파일을 이 디렉터리에 두더라도 커밋되지 않도록 하는 안전망.
+*.pem
+*.crt
+
+# 로컬 KiroCrew CLI 설정 (이 머신 전용).
+.kiro/
+
+# OS/에디터 부산물.
+.DS_Store
