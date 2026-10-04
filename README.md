@@ -1,5 +1,7 @@
 # KiroCrew + Tailscale (Docker, macOS/Linux)
 
+> 🇰🇷 **한국어: [README.ko.md](README.ko.md)**
+
 Run the KiroCrew gateway as a **headless Docker container**, with a Tailscale
 sidecar so people on your tailnet can reach the dashboard by its MagicDNS name.
 
@@ -134,7 +136,64 @@ only** to re-attach the netns. `./kirocrew.sh check` reports the routing-entry c
 
 ---
 
-## 5. `./kirocrew.sh` subcommands
+## 5. Persisting the login session (survives restart / redeploy)
+
+**Short answer: it already persists — you log in once.** Both logins are stored
+in named volumes, so a `restart`, a `down`/`up`, and an **image upgrade** all keep
+you authenticated. You only re-authenticate if you *delete the volume*.
+
+| What | Where it's stored (in-container) | Volume that persists it |
+| --- | --- | --- |
+| **kiro-cli** (Kiro model auth) — IAM Identity Center / device-flow token | `~/.aws/sso/cache/` + kiro-cli's state under `$HOME`, and `/home/kirocrew` **is** the mount | `kirocrew-home` |
+| **Tailscale** (tailnet node identity) | `/var/lib/tailscale` | `kirocrew-tailscale-state` |
+
+The compose mounts the container user's **entire home** as the volume
+(`kirocrew-home:/home/kirocrew`), so anything kiro-cli writes under `$HOME` — its
+token cache included — lands in the volume automatically. Nothing extra to wire.
+
+**What breaks persistence (and the fix):**
+
+| Action | Login survives? |
+| --- | --- |
+| `docker compose restart` / `./kirocrew.sh` | ✅ yes |
+| `docker compose down` → `up -d` | ✅ yes (down keeps named volumes) |
+| image upgrade (`pull` + `up -d`) | ✅ yes |
+| `docker compose down -v` | ❌ **no** — `-v` deletes the volumes. Never use `-v` unless you mean to wipe the tenant. (`./kirocrew.sh down` is plain `down`, so it's safe.) |
+| `docker volume rm kirocrew-home` | ❌ no — same effect |
+
+**Verify it yourself** (confirms the token is actually in the volume, not just
+container-local). Run in your shell:
+
+```bash
+cd ~/repos/kirocrew-docker
+
+# 1) container user + home, and the kiro-cli token cache
+docker compose exec kirocrew sh -c 'id; echo HOME=$HOME; ls -la ~/.aws/sso/cache/ 2>/dev/null'
+
+# 2) confirm /home/kirocrew is the named volume (not an ephemeral layer)
+docker inspect kirocrew \
+  --format '{{range .Mounts}}{{.Type}} {{.Name}} -> {{.Destination}}{{"\n"}}{{end}}'
+#   -> expect: volume kirocrew-home -> /home/kirocrew
+
+# 3) the real test: bounce the gateway and confirm no re-login is needed
+docker compose restart kirocrew && ./kirocrew.sh check
+#   the dashboard should answer without ./kirocrew.sh login again
+```
+
+> **Token expiry is a separate thing from volume persistence.** An IAM Identity
+> Center access token is short-lived; kiro-cli refreshes it using the stored
+> refresh token (also in the volume). If the whole SSO session expires (org policy,
+> weeks idle), the dashboard shows "session expired" and you re-run
+> `./kirocrew.sh login` once — that is normal SSO lifetime, not a volume problem.
+>
+> **For zero interactive logins at all,** a reusable Tailscale `TS_AUTHKEY` in
+> `.env` removes the tailscale step; the kiro-cli SSO device flow still needs a
+> human the first time (and whenever the SSO session fully expires) — that is by
+> design, there is no non-interactive IdC device-flow login.
+
+---
+
+## 6. `./kirocrew.sh` subcommands
 
 | Command | What it does |
 | --- | --- |
@@ -147,7 +206,7 @@ only** to re-attach the netns. `./kirocrew.sh check` reports the routing-entry c
 
 ---
 
-## 6. Multi-tenant — several people on one host
+## 7. Multi-tenant — several people on one host
 
 Clone this bundle **per tenant**. Four things to separate:
 
@@ -164,7 +223,7 @@ its own `kirocrew-home`.
 
 ---
 
-## 7. If you need a corporate CA (SASE)
+## 8. If you need a corporate CA (SASE)
 
 This track **drops** TLS-inspection handling. If your network re-signs TLS for a
 specific host (e.g. an IdP start URL) so that `kiro-cli login` dies there with
@@ -178,17 +237,18 @@ specific host (e.g. an IdP start URL) so that `kiro-cli login` dies there with
 
 ---
 
-## 8. Troubleshooting
+## 9. Troubleshooting
 
 | Symptom | Cause / fix |
 | --- | --- |
 | `docker not found` | Rancher Desktop off, or `~/.rd/bin` not on PATH |
 | `routing table is empty` | dead netns → `./kirocrew.sh` to re-attach (section 4) |
-| `kiro-cli login: dispatch failure` | usually dead netns (section 4); if netns is fine, corporate CA (section 7) |
+| `kiro-cli login: dispatch failure` | usually dead netns (section 4); if netns is fine, corporate CA (section 8) |
 | tailnet FQDN gives 403 | CORS not applied → section 3; confirm you ran `up -d` to recreate |
 | tailscale `Logged out` | `./kirocrew.sh tsauth` → approve the URL |
 | node named `kirocrew-1` | a same-named node exists → clean up in the console (section 3) |
-| dashboard "session expired" | run `kirocrew token` on that gateway → paste the URL back |
+| had to log in again after `down` | you used `down -v`; `-v` wipes volumes (section 5). Use plain `down` |
+| dashboard "session expired" | SSO session fully expired → `./kirocrew.sh login` once (section 5) |
 
 ---
 
