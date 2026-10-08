@@ -14,6 +14,7 @@
 #    ./kirocrew.sh check <host>    # 조직 고유 호스트까지 TLS 검증에 포함
 #    ./kirocrew.sh tsauth          # tailscale 대화형 로그인 URL 보기
 #    ./kirocrew.sh login           # kiro-cli 디바이스 플로우 로그인
+#    ./kirocrew.sh logout          # kiro-cli 로그아웃 (다른 계정으로 바꿀 때)
 #    ./kirocrew.sh down            # 내리기 (볼륨은 보존)
 # =============================================================================
 set -euo pipefail
@@ -161,11 +162,20 @@ do_login() {
     dc exec kirocrew kiro-cli login --use-device-flow --license pro
 }
 
+do_logout() {
+    is_running "$KC" || { bad "$KC 가 실행 중이 아닙니다"; return; }
+    step 'kiro-cli 로그아웃 (저장된 SSO 토큰 삭제)'
+    dc exec kirocrew kiro-cli logout || note 'logout 이 실패했거나 이미 로그아웃 상태입니다.'
+    ok '다른 계정으로 다시 로그인하려면: ./kirocrew.sh login'
+    note 'Google(oauth2-proxy) 계정도 바꾸려면 브라우저에서 /oauth2/sign_out 을 여세요 (README 8절).'
+}
+
 case "${1:-up}" in
     up)     do_up; do_check "${2:-}" ;;
     check)  do_check "${2:-}" ;;
     tsauth) show_tsauth ;;
     login)  do_login ;;
+    logout) do_logout ;;
     down)   step 'docker compose down'; dc down ;;
-    *)      echo "사용법: $0 [up|check|tsauth|login|down] [extra-host]" >&2; exit 2 ;;
+    *)      echo "사용법: $0 [up|check|tsauth|login|logout|down] [extra-host]" >&2; exit 2 ;;
 esac

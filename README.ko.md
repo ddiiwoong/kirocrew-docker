@@ -198,6 +198,7 @@ docker compose restart kirocrew && ./kirocrew.sh check
 | `./kirocrew.sh check <host>` | 위 + 지정 호스트까지 TLS 도달 점검 |
 | `./kirocrew.sh tsauth` | tailscale 대화형 로그인 URL 출력 |
 | `./kirocrew.sh login` | `kiro-cli login --use-device-flow` (Start URL / Region 입력) |
+| `./kirocrew.sh logout` | `kiro-cli logout` — 저장된 SSO 토큰 삭제. 계정을 바꾸려면 이어서 `login` |
 | `./kirocrew.sh down` | `docker compose down` (볼륨 보존) |
 
 ---

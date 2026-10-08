@@ -200,6 +200,7 @@ docker compose restart kirocrew && ./kirocrew.sh check
 | `./kirocrew.sh check <host>` | the above plus a TLS-reachability probe to `<host>` |
 | `./kirocrew.sh tsauth` | print the tailscale interactive login URL |
 | `./kirocrew.sh login` | `kiro-cli login --use-device-flow` (asks for Start URL / Region) |
+| `./kirocrew.sh logout` | `kiro-cli logout` — drops the stored SSO token; run `login` afterwards to switch accounts |
 | `./kirocrew.sh down` | `docker compose down` (volumes preserved) |
 
 ---
